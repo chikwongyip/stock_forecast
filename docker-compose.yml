@@ -1,0 +1,13 @@
+services:
+  sf:
+    build: .
+    image: stock-forecast:dev
+    # 源码热挂载: 改代码无需 rebuild
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./data:/app/data
+    # .env 由 compose 自动读取并注入容器
+    env_file:
+      - path: .env
+        required: false
