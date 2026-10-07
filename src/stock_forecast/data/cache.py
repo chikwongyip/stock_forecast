@@ -65,6 +65,27 @@ def is_fresh(key: str, today: date | None = None) -> bool:
     return ld.date() >= expected
 
 
+def _any_path(key: str) -> Path | None:
+    """parquet 或 pickle 缓存文件, 存在哪个返回哪个."""
+    for p in (_path(key), _CACHE_DIR / f"{key}.pkl"):
+        if p.exists():
+            return p
+    return None
+
+
+def saved_within(key: str, days: float) -> bool:
+    """缓存文件是否在最近 days 天内写入(按文件 mtime).
+
+    用于无法按"最新数据日期"判定新鲜度的源: 全市场共享表(龙虎榜)、
+    T+1 早晨才公布的滞后数据(融资融券/北向/外盘)、月频宏观、事件日历等。
+    """
+    p = _any_path(key)
+    if p is None:
+        return False
+    mtime = datetime.fromtimestamp(p.stat().st_mtime)
+    return datetime.now() - mtime <= timedelta(days=days)
+
+
 def save_json(key: str, obj: object) -> None:
     """LLM 结果等非表格数据缓存 (pickle)."""
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)

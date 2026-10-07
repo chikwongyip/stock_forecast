@@ -1,13 +1,46 @@
+x-sf-volumes: &sf-volumes
+  # 源码热挂载: 改代码无需 rebuild
+  - ./src:/app/src
+  - ./tests:/app/tests
+  - ./data:/app/data
+  - ./scripts:/app/scripts
+  # CI 工作流(Phase 7.3): test_ci.py 需在容器内做静态校验
+  - ./.github:/app/.github
+  # pytest/ruff 配置热更新, 改 pyproject 无需 rebuild
+  - ./pyproject.toml:/app/pyproject.toml
+
+x-sf-env: &sf-env
+  # .env 由 compose 自动读取并注入容器
+  - path: .env
+    required: false
+
 services:
   sf:
     build: .
     image: stock-forecast:dev
-    # 源码热挂载: 改代码无需 rebuild
-    volumes:
-      - ./src:/app/src
-      - ./tests:/app/tests
-      - ./data:/app/data
-    # .env 由 compose 自动读取并注入容器
-    env_file:
-      - path: .env
-        required: false
+    volumes: *sf-volumes
+    env_file: *sf-env
+
+  # Web 界面 v1 (Phase 6 / 6.3+6.4): 只读展示, http://localhost:8501
+  # 镜像 ENTRYPOINT 是 CLI 模块, 须整体覆盖为 streamlit 启动命令
+  web:
+    image: stock-forecast:dev
+    build: .
+    entrypoint:
+      - python
+      - -m
+      - streamlit
+      - run
+      - src/stock_forecast/web/app.py
+      - --server.port
+      - "8501"
+      - --server.address
+      - 0.0.0.0
+      - --server.headless
+      - "true"
+    ports:
+      - "8501:8501"
+    volumes: *sf-volumes
+    env_file: *sf-env
+    environment:
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"

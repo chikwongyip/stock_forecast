@@ -2,7 +2,6 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from stock_forecast.model import metrics, train
 from stock_forecast.model.backtest import run_backtest, walk_forward_folds
@@ -87,3 +86,36 @@ def test_model_save_load_roundtrip(tmp_path):
     pd.testing.assert_frame_equal(p1, p2)
     # 概率归一
     assert np.isclose(p1.values.sum(), 1.0)
+
+
+def test_multimodel_backtest_comparison():
+    """多模型 walk-forward(4.2/4.3): 每个模型独立过泄露检查 + 相关性矩阵合法.
+
+    泄露灵敏度口径: informative 特征直接决定标签, 任何合格成员都应近乎全对
+    并触发泄露报警 —— 逐模型独立检查(Phase 4 验收项)。
+    """
+    from stock_forecast.model import registry
+    from stock_forecast.model.backtest import run_multimodel_backtest
+
+    X, y = _synthetic_pool()
+    out = run_multimodel_backtest(X.drop(columns=["symbol"]), y, 0.6, 20)
+    results, comparison = out["results"], out["comparison"]
+    assert "lgbm" in results and not out["failed"]
+    for name, (detail, s) in results.items():
+        assert s["direction_accuracy"] > 0.9, f"{name} 未捕捉强信号"
+        assert s["possible_leakage"] is True, f"{name} 泄露报警未触发"
+        assert len(detail) == s["n_samples"]
+
+    if registry.XGBOOST_AVAILABLE:
+        assert "xgb" in results and "ensemble" in results
+        corr = comparison["p_up_corr"]
+        agree = comparison["dir_agreement"]
+        for a in corr:
+            assert corr[a][a] == 1.0
+            for b in corr[a]:
+                assert -1.0 <= corr[a][b] <= 1.0
+                assert 0.0 <= agree[a][b] <= 1.0
+        # 强信号下成员方向判断应高度一致
+        assert agree["lgbm"]["xgb"] > 0.8
+    else:
+        assert comparison == {}

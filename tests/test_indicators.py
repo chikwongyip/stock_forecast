@@ -20,10 +20,14 @@ def test_sma_hand_computed():
 
 
 def test_ema_hand_computed():
-    s = ind.ema(CLOSE, 3)  # alpha=1/3, adjust=False
-    assert np.isclose(s.iloc[0], 10.0)
-    assert np.isclose(s.iloc[1], 10 + (11 - 10) / 3)
-    assert np.isclose(s.iloc[2], (10 + 1 / 3) + (12 - 10 - 1 / 3) / 3)
+    s = ind.ema(CLOSE, 3)  # span=3 -> alpha = 2/(3+1) = 0.5, adjust=False
+    a = 2 / (3 + 1)
+    e0 = 10.0
+    e1 = e0 + a * (11 - e0)
+    e2 = e1 + a * (12 - e1)
+    assert np.isclose(s.iloc[0], e0)
+    assert np.isclose(s.iloc[1], e1)
+    assert np.isclose(s.iloc[2], e2)
 
 
 def _naive_rsi(close: list[float], n: int) -> list[float]:
@@ -50,7 +54,7 @@ def test_rsi_matches_wilder_recursion():
     got = ind.rsi(CLOSE, n).tolist()
     want = _naive_rsi(CLOSE.tolist(), n)
     for g, w in zip(got, want):
-        assert np.isclose(g, w, atol=1e-9), (g, w)
+        assert np.isclose(g, w, atol=1e-9, equal_nan=True), (g, w)
 
 
 def test_rsi_monotonic_up_is_100():
@@ -76,7 +80,7 @@ def test_macd_constant_series_is_zero():
 
 def test_boll_symmetry_and_position():
     upper, mid, lower = ind.boll(CLOSE, 5)
-    assert np.allclose(upper - mid, mid - lower)
+    assert np.allclose(upper - mid, mid - lower, equal_nan=True)  # 暖机期 NaN 对齐
     pos = (CLOSE - lower) / (upper - lower)
     assert (pos.dropna().between(-0.1, 1.1)).all()
 

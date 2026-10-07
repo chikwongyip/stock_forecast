@@ -7,6 +7,11 @@ ENV TZ=Asia/Shanghai \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 
+# LightGBM 运行时依赖 OpenMP (libgomp1), slim 镜像默认不含
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # 依赖层单独缓存: 先用空壳包只装依赖, 源码变更时不重装
 COPY pyproject.toml ./
 RUN mkdir -p src/stock_forecast && touch src/stock_forecast/__init__.py \

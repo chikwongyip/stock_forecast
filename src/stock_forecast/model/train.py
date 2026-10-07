@@ -48,9 +48,10 @@ def train_model(X: pd.DataFrame, y: pd.Series, seed: int = 42) -> LGBMClassifier
     y_enc = y.map(LABEL_MAP)
     X_tr, y_tr, X_val, y_val = _time_ordered_val_split(X, y_enc)
     model = make_model(seed)
+    # eval_X/eval_y 为 lightgbm>=4.7 的新式参数(替代已弃用的 eval_set, Phase 4.1 处理)
     model.fit(
         X_tr, y_tr,
-        eval_set=[(X_val, y_val)],
+        eval_X=X_val, eval_y=y_val,
         callbacks=[early_stopping(20, verbose=False)],
     )
     return model

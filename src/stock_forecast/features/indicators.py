@@ -105,7 +105,7 @@ def compute_all(kline: pd.DataFrame) -> pd.DataFrame:
 
     输出与输入按 date 索引对齐; 第 T 行含 T 日行情信息(防前视 shift 在 build.py).
     """
-    c, h, l = kline["close"], kline["high"], kline["low"]
+    c, h, lo = kline["close"], kline["high"], kline["low"]
     v = kline["volume"].astype(float)
     o = kline["open"]
     f = pd.DataFrame(index=kline.index)
@@ -121,19 +121,19 @@ def compute_all(kline: pd.DataFrame) -> pd.DataFrame:
 
     # 动量
     f["rsi6"], f["rsi14"], f["rsi24"] = rsi(c, 6), rsi(c, 14), rsi(c, 24)
-    f["kdj_k"], f["kdj_d"], f["kdj_j"] = kdj(h, l, c)
+    f["kdj_k"], f["kdj_d"], f["kdj_j"] = kdj(h, lo, c)
     f["roc10"] = c.pct_change(10)
 
     # 波动
     upper, mid, lower = boll(c)
     f["boll_width"] = (upper - lower) / mid
     f["boll_position"] = ((c - lower) / (upper - lower)).clip(-0.5, 1.5)
-    f["atr_ratio"] = atr(h, l, c) / c
+    f["atr_ratio"] = atr(h, lo, c) / c
 
     # 量价
     f["obv_slope5"] = obv(c, v).diff(5)
     f["volume_ratio"] = v / sma(v, 20)
-    f["mfi14"] = mfi(h, l, c, v)
+    f["mfi14"] = mfi(h, lo, c, v)
 
     # 收益率与波动率
     for n in (1, 3, 5, 10, 20):
@@ -142,10 +142,10 @@ def compute_all(kline: pd.DataFrame) -> pd.DataFrame:
     f["volatility20"] = c.pct_change().rolling(20).std()
 
     # K线形态(相对值)
-    f["amplitude"] = (h - l) / c
+    f["amplitude"] = (h - lo) / c
     f["close_open_ratio"] = (c - o) / o
     f["upper_shadow"] = (h - pd.concat([c, o], axis=1).max(axis=1)) / c
-    f["lower_shadow"] = (pd.concat([c, o], axis=1).min(axis=1) - l) / c
+    f["lower_shadow"] = (pd.concat([c, o], axis=1).min(axis=1) - lo) / c
 
     # 隔日跳空
     f["gap"] = o / c.shift(1) - 1

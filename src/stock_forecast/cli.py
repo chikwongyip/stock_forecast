@@ -1,7 +1,7 @@
-"""CLI 入口: 子命令 fetch / features / backtest / news / predict."""
+"""CLI 入口: fetch / features / backtest / news / predict / regime / track
+/ drift / retrain / rollback / feedback."""
 
 import argparse
-import sys
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -15,6 +15,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_fetch = sub.add_parser("fetch", help="拉取股票数据并写入本地缓存")
     p_fetch.add_argument("symbol", help="A股代码, 如 600519")
     p_fetch.add_argument("--refresh", action="store_true", help="忽略缓存强制重新拉取")
+    p_fetch.add_argument("--check", action="store_true",
+                         help="只做各数据源缓存健康检查, 不发起拉取")
 
     # features: 构建特征矩阵
     p_feat = sub.add_parser("features", help="构建特征矩阵与标签")
@@ -34,6 +36,48 @@ def _build_parser() -> argparse.ArgumentParser:
     p_pred.add_argument("symbol", help="A股代码")
     p_pred.add_argument("--no-llm", action="store_true", help="跳过 LLM 舆情线")
     p_pred.add_argument("--json", action="store_true", help="输出 JSON 而非终端报告")
+    p_pred.add_argument("--mode", choices=("simple", "pro"), default="pro",
+                        help="simple=新手模式(方向+置信度+白话提示, 零术语); pro=全量报告(默认)")
+
+    # regime: 市场状态识别 (L4, Phase 3)
+    p_regime = sub.add_parser("regime", help="识别当前市场状态(牛/熊/震荡, 规则引擎)")
+    p_regime.add_argument("--json", action="store_true", help="输出 JSON 而非终端报表")
+
+    # track: 结算预测埋点, 输出实盘准确率
+    p_track = sub.add_parser("track", help="结算预测埋点, 输出实盘准确率")
+    p_track.add_argument("--refresh", action="store_true", help="结算时强制重拉K线(忽略缓存)")
+    p_track.add_argument("--json", action="store_true", help="输出 JSON 而非终端报表")
+
+    # drift: 特征漂移 PSI 监控 (Phase 7.1); 退出码 2 = 存在 alert 级漂移
+    p_drift = sub.add_parser(
+        "drift", help="特征漂移检查(近端 vs 训练期 PSI, 告警写 data/alerts.csvl)")
+    p_drift.add_argument("symbols", nargs="*", default=None,
+                         help="可选: 只查指定票(默认全票池)")
+    p_drift.add_argument("--window", type=int, default=None,
+                         help="近端对比窗口(交易日, 默认 drift_window=20)")
+    p_drift.add_argument("--json", action="store_true", help="输出 JSON 而非终端报表")
+
+    # retrain: 自动重训(回测不劣于现役才替换, 旧代际归档可回滚) (Phase 7.2)
+    p_retrain = sub.add_parser("retrain", help="重训票池模型, 不劣于现役才替换(旧模型归档)")
+    p_retrain.add_argument("--dry-run", action="store_true",
+                           help="演练: 只回测与判定, 不训练最终模型不写工件")
+    p_retrain.add_argument("--force", action="store_true",
+                           help="跳过对比强制替换(仍归档旧模型)")
+    p_retrain.add_argument("--tolerance", type=float, default=None,
+                           help="方向准确率容差(默认 retrain_tolerance=0, 即不劣于即替换)")
+
+    # rollback: 恢复最近一次归档的模型代际 (Phase 7.2)
+    p_rb = sub.add_parser("rollback", help="回滚到最近一次归档的模型(含漂移基线)")
+    p_rb.add_argument("--list", action="store_true", help="只列出归档, 不执行回滚")
+
+    # feedback: 用户反馈收集 (Phase 7.4)
+    p_fb = sub.add_parser("feedback", help="记录预测反馈(落 data/feedback.csvl)或查看统计")
+    p_fb.add_argument("symbol", nargs="?", default=None, help="被反馈的股票代码")
+    p_fb.add_argument("--rating", choices=("helpful", "wrong", "other"), default=None,
+                      help="有帮助/有误/其他")
+    p_fb.add_argument("--note", default="", help="备注(负反馈建议说明原因, 月度复盘用)")
+    p_fb.add_argument("--date", default=None, help="被反馈的预测日期(YYYY-MM-DD, 可选)")
+    p_fb.add_argument("--list", action="store_true", help="查看反馈统计(月度复盘)")
 
     return parser
 
@@ -62,88 +106,78 @@ def main(argv: list[str] | None = None) -> int:
         from stock_forecast.cli import run_predict
 
         return run_predict(args)
+    if args.command == "regime":
+        from stock_forecast.features.regime import cmd_regime
+
+        return cmd_regime(args)
+    if args.command == "track":
+        from stock_forecast.monitor.track import cmd_track
+
+        return cmd_track(args)
+    if args.command == "drift":
+        from stock_forecast.monitor.drift import cmd_drift
+
+        return cmd_drift(args)
+    if args.command == "retrain":
+        from stock_forecast.model.retrain import cmd_retrain
+
+        return cmd_retrain(args)
+    if args.command == "rollback":
+        from stock_forecast.model.retrain import cmd_rollback
+
+        return cmd_rollback(args)
+    if args.command == "feedback":
+        from stock_forecast.monitor.feedback import cmd_feedback
+
+        return cmd_feedback(args)
     parser.print_help()
     return 1
 
 
 def run_predict(args: argparse.Namespace) -> int:
-    """predict 主编排: fetch -> features -> ML 推理 -> LLM 舆情 -> 融合 -> 渲染."""
+    """predict 渲染层: 编排全部委托 pipeline.predict_once(CLI 与 Web 共用, Phase 6)."""
     import json
-    from datetime import datetime
 
     from rich.console import Console
 
-    from stock_forecast.config import DATA_DIR, PREDICTIONS_LOG, get_settings
-    from stock_forecast.data import collector
-    from stock_forecast.features import build as fb
-    from stock_forecast.fusion import combine
-    from stock_forecast.llm import report as rpt
-    from stock_forecast.llm.sentiment import analyze_sentiment
-    from stock_forecast.model import train
+    from stock_forecast import pipeline
     from stock_forecast.output import render
 
     console = Console()
-    settings = get_settings()
+    result = pipeline.predict_once(args.symbol, use_llm=not args.no_llm)
 
-    booster = train.load_booster()
-    if booster is None:
-        console.print(
-            "[red]未找到已训练模型. 请先运行: docker compose run --rm sf backtest --pool[/red]"
-        )
+    for note in result.get("notices", []):
+        console.print(f"[yellow]{note}[/yellow]")
+    if not result["ok"]:
+        console.print(f"[red]{result['error']}[/red]")
         return 1
 
-    data = collector.fetch_all(args.symbol)
-    kline = data.get("kline")
-    if kline is None or kline.empty:
-        console.print(f"[red]{args.symbol} K线数据不可用[/red]")
-        return 1
+    # 合规阻断(5.2): 不渲染研判, 不写埋点(pipeline 内已记 compliance_log)
+    if result["blocked"]:
+        if args.json:
+            print(render.build_blocked_json(result["blocked_payload"]))
+        else:
+            render.render_blocked(result["blocked_payload"])
+        return 0
 
-    X, _y, _optional = fb.build_feature_matrix(
-        kline, data["index"], data["fund_flow"], settings.label_threshold
-    )
-    X_latest = X.iloc[[-1]]
-    feats = booster.feature_name()
-    missing = [c for c in feats if c not in X_latest.columns]
-    if missing:
-        console.print(f"[red]特征缺失(缓存过旧?): {missing[:5]} ...[/red]")
-        return 1
-    probs = train.predict_proba_df(booster, X_latest[feats]).iloc[0].to_dict()
-
-    sentiment = (
-        {"available": False, "reasoning": "--no-llm: 已跳过 LLM 舆情线"}
-        if args.no_llm
-        else analyze_sentiment(args.symbol)
-    )
-
-    fused = combine.fuse(probs, sentiment, kline_tail=kline.tail(6), settings=settings)
-
-    gains = booster.feature_importance(importance_type="gain")
-    top_names = [n for n, _ in sorted(zip(feats, gains), key=lambda t: -t[1])[:5]]
-
-    date_str = str(X.index[-1].date())
-    narrative = rpt.build_narrative(
-        fused["direction"], fused["confidence"],
-        rpt.ml_narrative(probs["p_up"], probs["p_flat"], probs["p_down"], top_names),
-        rpt.llm_narrative(sentiment),
-        fused["warnings"],
-    )
+    # 新手模式(6.2): 方向+置信度+一句话理由+白话风险提示, 零术语
+    if args.mode == "simple":
+        if args.json:
+            print(json.dumps(result["simple"], ensure_ascii=False, indent=2))
+        else:
+            render.render_report_simple(result["simple"])
+        return 0
 
     if args.json:
-        print(render.build_json_report(args.symbol, date_str, fused, sentiment, narrative))
+        print(pipeline.report_json_text(result))
     else:
-        render.render_report(args.symbol, date_str, fused, sentiment, narrative)
-
-    # L8 埋点: 预测落盘, 供后续准确率追踪
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(PREDICTIONS_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "ts": datetime.now().isoformat(timespec="seconds"),
-            "symbol": args.symbol, "date": date_str,
-            "direction": fused["direction"], "confidence": fused["confidence"],
-            **{k: v for k, v in fused["probs"].items()},
-            "s_ml": fused["s_ml"], "s_llm": fused["s_llm"], "s_final": fused["s_final"],
-            "llm_available": fused["llm_available"],
-        }, ensure_ascii=False) + "\n")
+        render.render_report(
+            result["symbol"], result["date"], result["fused"],
+            result["sentiment"], result["narrative"],
+            regime_info=result["regime_info"],
+            scenarios=result["scenarios"],
+            track_summary=result["track_summary"],
+        )
     return 0
 
 
