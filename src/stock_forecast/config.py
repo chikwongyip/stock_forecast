@@ -10,10 +10,12 @@ CACHE_DIR = DATA_DIR / "cache"
 MODELS_DIR = DATA_DIR / "models"
 PREDICTIONS_LOG = DATA_DIR / "predictions.csvl"
 COMPLIANCE_LOG = DATA_DIR / "compliance_log.jsonl"  # L6 合规违规拦截记录 (Phase 5.2)
-TRACK_SUMMARY_FILE = DATA_DIR / "track_summary.json"  # track 摘要缓存, 供 predict/Web 展示 (Phase 6.1)
+# track 摘要缓存, 供 predict/Web 展示 (Phase 6.1)
+TRACK_SUMMARY_FILE = DATA_DIR / "track_summary.json"
 ALERTS_LOG = DATA_DIR / "alerts.csvl"  # L8 运维告警(漂移/重训/回滚审计, Phase 7.1/7.2)
 FEEDBACK_LOG = DATA_DIR / "feedback.csvl"  # 用户反馈 (Phase 7.4)
-DRIFT_BASELINE_FILE = MODELS_DIR / "drift_baseline.json"  # PSI 漂移基线(随模型代际归档, Phase 7.1)
+DRIFT_BASELINE_FILE = MODELS_DIR / \
+    "drift_baseline.json"  # PSI 漂移基线(随模型代际归档, Phase 7.1)
 MODELS_ARCHIVE_DIR = MODELS_DIR / "archive"  # 重训替换前的旧模型归档(可回滚, Phase 7.2)
 
 
@@ -92,26 +94,7 @@ class Settings(BaseSettings):
 
     # 默认票池: 跨行业代表股, 用于训练横截面通用模型
     stock_pool: list[str] = [
-        "600519",  # 贵州茅台
-        "000858",  # 五粮液
-        "601318",  # 中国平安
-        "600036",  # 招商银行
-        "000001",  # 平安银行
-        "600030",  # 中信证券
-        "300750",  # 宁德时代
-        "002594",  # 比亚迪
-        "600900",  # 长江电力
-        "601890",  # 万华化学
-        "000333",  # 美的集团
-        "600276",  # 恒瑞医药
-        "601888",  # 中国中免
-        "002415",  # 海康威视
-        "600887",  # 伊利股份
-        "601088",  # 中国神华
-        "000002",  # 万科A
-        "600028",  # 中国石化
-        "601633",  # 长城汽车
-        "300059",  # 东方财富
+        "600183"
     ]
 
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-A股日频走势预测 CLI(MVP, 按 `sys_design.md` 8 层方案裁剪): 技术面 LightGBM 三分类线 + DeepSeek 舆情打分线并行, 加权融合(0.7/0.3)输出。代码注释、文档、终端输出均为中文, 新代码保持一致。
+A股日频走势预测 CLI(MVP, 按 `sys_design.md` 8 层方案裁剪): 技术面 LightGBM 三分类线 + DeepSeek 舆情打分线并行, 加权融合(0.7/0.3)输出。代码注释、文档、终端输出均为中文, 新代码保持一致。Python 固定 3.12(镜像 python:3.12-slim, `requires-python >=3.12,<3.13`)。全项目**有意使用 naive 本地时间**(`datetime.now()`, 容器 `TZ=Asia/Shanghai` 与 A 股交易日历一致), 不要改成 timezone-aware; ruff 规则集在 pyproject 显式锁 E4/E7/E9/F(防新版默认 DTZ/BLE/SIM/RUF 等漂移), 不要放宽 `select`, 也不要按新规则"修复"现有代码。
 
 ## 命令
 
@@ -13,16 +13,16 @@ A股日频走势预测 CLI(MVP, 按 `sys_design.md` 8 层方案裁剪): 技术�
 compose 把 `./src`、`./tests`、`./data` 热挂载进容器, **改代码无需 rebuild**。
 
 ```bash
-docker compose run --rm sf fetch 600519          # 拉数据写 parquet 缓存
+docker compose run --rm sf fetch 600519          # 拉数据写 parquet 缓存; --refresh 忽略缓存强制重拉
 docker compose run --rm sf fetch --check 600519  # 数据源健康检查(纯本地, 不触网)
 docker compose run --rm sf features 600519       # 特征矩阵与标签分布
 docker compose run --rm sf backtest --pool       # walk-forward 回测 + 训练最终模型落盘(predict 的前置)
 docker compose run --rm sf news 600519           # LLM 舆情线单独调试
-docker compose run --rm sf regime                # 市场状态识别(牛/熊/震荡, L4 规则引擎)
+docker compose run --rm sf regime                # 市场状态识别(牛/熊/震荡, L4 规则引擎); --json 机器可读
 docker compose run --rm sf predict 600519        # 端到端; --no-llm 纯技术面; --json 机器可读; --mode simple 新手模式(零术语)
-docker compose run --rm sf track                 # 结算预测埋点, 输出实盘准确率(度量闭环), 并落摘要缓存供 predict/Web 展示
-docker compose run --rm sf drift                 # 特征漂移 PSI 检查(告警落 data/alerts.csvl; 退出码 2 = alert 级)
-docker compose run --rm sf retrain --dry-run     # 重训演练(只回测对比不写工件); 去掉 --dry-run 才真正替换+归档
+docker compose run --rm sf track                 # 结算预测埋点, 输出实盘准确率(度量闭环), 并落摘要缓存供 predict/Web 展示; --refresh 强制重拉K线, --json 机器可读
+docker compose run --rm sf drift                 # 特征漂移 PSI 检查(告警落 data/alerts.csvl; 退出码 2 = alert 级); 可带 symbols 只查指定票, --window 近端窗口, --json
+docker compose run --rm sf retrain --dry-run     # 重训演练(只回测对比不写工件); 去掉 --dry-run 才真正替换+归档; --force 跳过"不劣于"对比强制替换(仍归档), --tolerance 方向准确率容差
 docker compose run --rm sf rollback              # 回滚到最近归档的模型代际(含漂移基线); --list 只列归档
 docker compose run --rm sf feedback 600519 --rating wrong --note "方向判反"   # 用户反馈; 无参数/--list = 复盘统计
 docker compose run --rm --entrypoint bash sf /app/scripts/daily.sh     # 每日例行(收盘后批量预测+结算)
@@ -86,8 +86,9 @@ Web(web/app.py, Streamlit, compose `web` 服务)共用同一入口与同一 repo
 
 - 盘中运行时 akshare 日K含当日未收盘行, 最后一行特征含义有偏差; 系统假定收盘后或开盘前运行。
 - 资金流数据仅覆盖近 ~120 交易日, 更早样本该组特征为 NaN。
-- 北向资金逐日披露已被交易所自 2024-08 起停止: 该组特征可能全 NaN 自动降级(`fetch_northbound` 检测滞后 >30 天并告警)。
-- Phase 2 扩展源的 akshare 字段映射为多候选防御式编写, 未在真实网络下联调(沙箱无网); 首次真实运行按 `docs/experiments.md` 联调清单核对, 映射失败会告警并降级 NaN。
+- 北向资金逐日披露已被交易所自 2024-08 起停止, `stock_hsgt_north_net_flow_in_em` 接口在 akshare 1.18.97 已被移除: `get_northbound` 显式降级告警, 该组特征全 NaN。
+- Phase 2 扩展源的 akshare 字段映射为多候选防御式编写; 首次真实联调已完成(2026-10-15): lhb 已修复(真实列名 `上榜日`), north 已随 akshare 移除, industry/holder/unlock/macro/.VIX 仍有 schema 漂移待修(全部 optional 源, NaN 降级不阻塞), 详见 `docs/experiments.md` 联调结果表。
+- **东财 WAF 定向拦截(2026-10 实测)**: 拦截"akshare 硬编码指纹 ∧ 批量历史"组合 —— K线接口 `ut=7eea…` ∧ `fields2 含 f116` ∧ 长范围; fflow 接口 `ut=b2884…` ∧ `lmt=0`; 命中掐断连接(RemoteDisconnected)且招致 IP 级次生惩罚(实测 ~7.5h, 按边缘节点异步解除 → 故障间歇性; UA 非判别因子)。`stock/get`(industry/股票简称)则是 akshare 不带 ut → 恒 502, 且该端点另有无规律 502 抖动。对策全部收敛在 `akshare_client.py`: 规则化传输层重写 `_request_with_waf_rewrite`(被拦 ut 集合→fa5fd, 若日后吊销需再换; fflow lmt=0→有界; stock/get 补 ut) + `get_index_kline` 直连(akshare 指数接口依赖被拦的全市场映射表 `index_code_id_map_em` 且恒下载全史) + 5 次抖动退避重试 + 浏览器 UA 卫生。K线备源(新浪/腾讯, 实测可用但 volume 单位口径需归一)为候选加固, 未实施, 见 experiments.md。
 - `predict` 依赖 `backtest --pool` 落盘的注册表工件: `data/models/pool_meta.json`(元数据: 成员/特征列清单/训练时间范围) + `pool_model.txt`(LightGBM) + `pool_xgb.json`(XGBoost); 无 meta 的旧版 `pool_model.txt` 自动回退单 LightGBM 路径。特征一致性检查以注册表特征清单为准, 不一致报"特征缺失(缓存过旧?)"。新增特征列后旧模型仍可 predict(多余列被忽略), 但要让新特征生效必须重跑 backtest。
 - 多模型回测(Phase 4)训练时长 ≈ 成员数 × 单模型(`backtest --pool` 每 fold 训练 lgbm+xgb 两个模型); 回测主表仍为 LightGBM 基线口径(跨 Phase 可比), 多模型对比与 p_up 相关矩阵另表输出。
 - 埋点 schema v4: v3 +`trading_status`/`applicability`(交易状态与适用性, Phase 5); v3 = +`model`/`disagreement`; `track` 读取端对 v0~v4 全兼容(缺字段回填"未标注"/忽略)。当前停牌股无次日行情 → 结算天然 pending, 不污染准确率。

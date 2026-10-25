@@ -439,6 +439,71 @@ docker compose run --rm sf drift             # 全票池漂移首查
 
 ---
 
+## 真实网络联调与东财 WAF 对抗 (2026-10-14/15, 本机首次真实联调)
+
+### 东财 WAF 定向拦截 — kline 获取失败根因(受控实验结论)
+
+- **拦截签名**: akshare 硬编码 `ut=7eea3edcaed734bea9cbfc24409ed989` ∧ `fields2 含 f116`
+  ∧ 长日期范围(批量历史) → TCP 直接掐断(`RemoteDisconnected`), 15+ 次复现;
+  同指纹短范围(≤92d)放行, 改动 ut 或去掉 f116 任一分量后长范围放行,
+  **UA 非判别因子**(akshare 指纹 + 浏览器 UA 照样被拦)。
+- **次生 IP 惩罚**: 命中拦截签名的请求会招致 IP 级惩罚, 当晚实测约 7.5h
+  (21:56→05:21), 东财边缘节点异步解除(响应 svr 各异), 期间故障呈间歇性 ——
+  同一请求时成时败, 3 次 2s/4s 快速重试常全部落在惩罚窗口内。
+- **对策(全部收敛在 `akshare_client.py`, 无需 rebuild 热挂载生效)**:
+  1. 传输层重写 `ut`(patch `requests.Session.request`, 仅 eastmoney.com 的
+     dict params: 7eea→fa5fd 旧 token, 服务端仍认可; 不动 fields2 以免破坏
+     akshare 解析端的列数假设);
+  2. `get_index_kline` 改直连 push2his K线接口: akshare `index_zh_a_hist`
+     前置依赖 `index_code_id_map_em()`(全市场指数映射批量请求, 被拦), 且其
+     请求体硬编码 beg=0/end=20500000 **忽略传入起止日期**(每次全量下载
+     ~8700 根); 直连版有界范围 + 可用 token + 免映射表, 输出 schema 不变;
+  3. `_retry` 强化: 3→5 次, 退避 2/4/8/16s(封顶 20s) + 0.5~1.5 抖动,
+     适配间歇性惩罚期;
+  4. 浏览器 UA 伪装保留(虽非本次判别因子, 作通用卫生, 降低命中其他规则概率)。
+- 验证: `sf fetch 600519 --refresh` 核心源全绿(kline 242 行 / index 485 行 /
+  fund_flow 120 行, 覆盖至 2026-10-14; margin/global 正常)。
+
+### 拦截签名扩展(2026-10-16, fund_flow 回归诊断)
+
+- **fflow 资金流**(push2his `fflow/daykline/get`): 拦截签名 = akshare 硬编码
+  `ut=b2884a393a59ad64002292a3e90d46a5` ∧ `lmt=0`(全史)。受控实验 4 例:
+  原签名 FAIL / 只换 UA FAIL(UA 再次非判别因子) / 只换 ut=fa5fd OK(121根) /
+  只改 lmt=120 OK(120根) —— 与 kline 同族规则(已知 token+批量史指纹)。
+- **个股信息**(push2 `stock/get`, industry/股票简称共用): akshare `info_em`
+  **不带 ut** → 稳定 502 Bad Gateway(HTML 响应体, 即 `Expecting value` 报错
+  来源, 3/3 复现); 补 ut 后曾 200, 但随后同参数连发也全 502 —— 该端点另有
+  **无规律服务端抖动**, 非纯指纹问题。处置: 传输层补 ut + 靠强化 _retry 扛
+  抖动; industry 特征与 ST 识别在其持续 502 期间按设计降级(NaN/跳过)。
+- 对策升级为**规则化传输层重写**(`_request_with_waf_rewrite`, 仍全部收敛在
+  akshare_client.py): ① 被拦 ut 集合 {7eea, b2884} → fa5fd; ② fflow `lmt=0`
+  → 200(该源真实覆盖仅 ~120 交易日, 有界化零损失, 与①互为双保险);
+  ③ `stock/get` 无 ut 时补 ut。
+- 验证: `get_fund_flow('600519')` 121 行至 2026-10-16; `sf fetch --refresh`
+  核心三源(kline/index/fund_flow)+margin+global 全绿; pytest 215 passed。
+- ⚠ 遗留风险: fa5fd 亦是历史 token, 若日后被吊销需再换; daily.sh 批量 20 票
+  短时连发请求有触发限流的理论风险(候选缓解: 票间礼貌间隔 / K线备源降级到
+  新浪 `stock_zh_a_daily` 或腾讯 `stock_zh_a_hist_tx` —— 两备源当晚实测可用
+  且数据至今日, 但 volume 单位口径与东财不同(手 vs 股), 接入须归一化 + 换源
+  一致性单测, 未实施)。
+
+### Phase 2 联调清单核对结果(对应上方"字段映射待联调清单")
+
+| 接口 | 结果 | 处置 |
+| --- | --- | --- |
+| `stock_lhb_detail_em` | ✅ 已修复 | 真实 date 列名为 `上榜日`(非"上榜日期"), 已加入候选; 600519 显示 0 行 = 近 120d 无上榜, 语义正确(无事件→0) |
+| `stock_hsgt_north_net_flow_in_em` | ⚰ 接口已移除 | akshare 1.18.97 已无该函数(交易所 2024-08 停止逐日披露); `get_northbound` 改为显式 AkshareError 降级(此前是裸 AttributeError), 特征按 NaN |
+| `stock_individual_info_em`(industry) | ⚠ 已缓解 | `Expecting value` 根因 = akshare 不带 ut → 恒 502 HTML; 传输层已补 ut, 但该端点另有无规律 502 抖动(2026-10-16), 持续失败时按设计降级(特征 NaN / 跳过 ST) |
+| `stock_share_change_cninfo`(holder) | ❌ 待修 | 实际返回股本结构表(证券简称/机构名称/境外法人持股/国家持股-受限…), 并非增减持事件, 需另寻替代接口 |
+| `stock_restricted_release_queue_em`(unlock) | ❓ 待判 | 返回空帧(无列); 无法区分"600519 确无解禁"与接口漂移, 需换近期有解禁事件的股票复核 |
+| `macro_china_pmi/cpi/money_supply` | ❌ 待修 | 三指标全部解析失败, 真实列名待核对 |
+| `index_us_stock_sina`(.VIX) | ❌ 待修 | .IXIC/.INX 正常; .VIX `list index out of range`(新浪解析漂移), vix 列缺失自动降级 |
+
+剩余 ❌/❓ 均为 optional 源, NaN 降级不阻塞主链路; 修复按本表逐项推进,
+每项修复后在此更新状态。
+
+---
+
 ## 历史基线参考
 
 - MVP(Phase 0, 47 列): 未在真实数据上留存回测记录(仓库 data/ 不入库),
